@@ -1,0 +1,10 @@
+# Run lint error check before push
+echo "🔍 Checking for lint errors..."
+yarn show-lint-error || exit 1
+
+# Run type check
+echo "📝 Running TypeScript type check..."
+npx tsc --noEmit || exit 1
+
+echo "✅ Pre-push checks passed!"
+

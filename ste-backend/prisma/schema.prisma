@@ -1,0 +1,87 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model TradingPair {
+  id              String      @id @default(cuid())
+  pairId          String      @unique // e.g., "BTC-USDT"
+  baseToken       String      // Symbol
+  quoteToken      String      // Symbol
+  baseTokenAddress String
+  quoteTokenAddress String
+  baseDecimals    Int
+  quoteDecimals   Int
+  lastPrice       Float       @default(0)
+  priceChange24h  Float       @default(0)
+  volume24h       Float       @default(0)
+  high24h         Float       @default(0)
+  low24h          Float       @default(0)
+  isActive        Boolean     @default(true)
+  createdAt       DateTime    @default(now()) @db.Timestamp(6)
+  updatedAt       DateTime    @updatedAt @db.Timestamp(6)
+
+  @@map("tradingPairs")
+}
+
+model OrderBook {
+  id            String      @id @default(cuid())
+  orderId       String      @unique
+  metadata      String     
+  side          String     
+  price         Float     
+  size          Float
+  pairId        String      @default("BTC-USDT")
+  userAddress   String      @default("unknown")
+  status        String      @default("open") // open, filled, cancelled
+  filledSize    Float       @default(0)
+  createdAt     DateTime    @default(now()) @db.Timestamp(6)
+  updatedAt     DateTime    @default(now()) @updatedAt @db.Timestamp(6)
+
+  @@map("orderBook")
+}
+
+model OrderBookAudit {
+  id          Int         @id @default(autoincrement())
+  snapshot    Json
+  journal     Json[]
+  createdAt   DateTime    @default(now()) @db.Timestamp(6)
+  updatedAt   DateTime    @default(now()) @updatedAt @db.Timestamp(6)
+
+  @@map("orderBookAudit")
+}
+
+model Trade {
+  id              String      @id @default(cuid())
+  pairId          String
+  price           Float
+  amount          Float
+  side            String      // buy or sell
+  makerAddress    String
+  takerAddress    String
+  makerOrderId    String
+  takerOrderId    String
+  txHash          String?
+  createdAt       DateTime    @default(now()) @db.Timestamp(6)
+
+  @@index([pairId])
+  @@index([createdAt])
+  @@map("trades")
+}
+
+model User {
+  id                String      @id @default(cuid())
+  userAddress       String      @unique
+  createdAt         DateTime    @default(now()) @db.Timestamp(6)
+  updatedAt         DateTime    @updatedAt @db.Timestamp(6)
+
+  @@map("users")
+}
+

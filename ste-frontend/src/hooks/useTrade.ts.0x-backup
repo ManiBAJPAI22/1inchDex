@@ -1,0 +1,554 @@
+import { Contract, ethers } from 'ethers';
+import assert from 'assert';
+import { BigNumber } from '@0x/utils';
+import ConstantProvider from '../utils/constantProvider';
+import { LimitOrder, OrderStatus, RfqOrder, Signature, SignatureType } from '@0x/protocol-utils';
+import { ZERO_X_NATIVE_ORDER_FEATURE_ABI } from '../utils/tradeABI';
+import { erc20Abi } from 'viem';
+import { useAccount } from 'wagmi';
+import { useEthersProvider, useEthersSigner } from '@/lib/etherAdapter';
+
+export enum OrderType {
+  LIMIT = 'LIMIT',
+  RFQ = 'RFQ',
+}
+
+export interface CreateOrderProps {
+  maker: string;
+  taker: string;
+  makerToken: string;
+  takerToken: string;
+  orderType: OrderType;
+  makerAssetAmount: bigint;
+  takerAssetAmount: bigint;
+  expiryUnixTimestamp: bigint;
+}
+
+export interface CreateLimitOrderProps {
+  maker: string;
+  taker: string;
+  makerToken: string;
+  takerToken: string;
+  makerAmount: BigNumber;
+  takerAmount: BigNumber;
+  expiry: BigNumber;
+  chainId: number;
+  verifyingContract: string;
+  pool: string;
+  salt: BigNumber;
+  takerTokenFeeAmount: BigNumber;
+  feeRecipient: string;
+  sender: string;
+}
+
+export const TAKER_TOKEN_FEE_AMOUNT = '0';
+
+export function useTrade() {
+  const { address } = useAccount();
+  const signer = useEthersSigner();
+  const provider = useEthersProvider();
+
+  const exchangeProxyAddress = ConstantProvider.EXCHANGE_PROXY_ADDRESS;
+
+  // Approve token spending (direct transaction)
+  const approveToken = async ({
+    tokenAddress,
+    spender = exchangeProxyAddress,
+    amount = ethers.MaxUint256,
+  }: {
+    tokenAddress: string;
+    spender?: string;
+    amount?: bigint;
+  }) => {
+    assert(signer, 'signer == undefined');
+
+    console.log('Approving token:', { tokenAddress, spender, amount: amount.toString() });
+
+    const tokenContract = new Contract(tokenAddress, erc20Abi, signer);
+
+    const tx = await tokenContract.approve(spender, amount);
+    const receipt = await tx.wait();
+
+    console.log('Token approved:', receipt.hash);
+    return receipt;
+  };
+
+  // Check token allowance
+  const checkAllowance = async ({
+    tokenAddress,
+    owner,
+    spender = exchangeProxyAddress,
+  }: {
+    tokenAddress: string;
+    owner: string;
+    spender?: string;
+  }): Promise<bigint> => {
+    assert(signer, 'signer == undefined');
+
+    console.log({ tokenAddress, owner, spender }, 'checkAllowance');
+
+    const tokenContract = new Contract(tokenAddress, erc20Abi, signer);
+
+    const allowance = await tokenContract.allowance(owner, spender);
+    return BigInt(allowance.toString());
+  };
+
+  // Get base order configuration (common to all order types)
+  const getBaseOrderConfig = ({
+    maker,
+    taker,
+    makerToken,
+    takerToken,
+    makerAssetAmount,
+    takerAssetAmount,
+    expiryUnixTimestamp,
+  }: CreateOrderProps) => {
+    return {
+      maker,
+      taker,
+      makerToken,
+      takerToken,
+      makerAmount: new BigNumber(makerAssetAmount.toString()),
+      takerAmount: new BigNumber(takerAssetAmount.toString()),
+      expiry: new BigNumber(expiryUnixTimestamp.toString()),
+      takerTokenFeeAmount: new BigNumber(TAKER_TOKEN_FEE_AMOUNT),
+      feeRecipient: ethers.ZeroAddress,
+      sender: ethers.ZeroAddress,
+    };
+  };
+
+  // Create a limit order type object
+  const createLimitOrderType = async ({
+    maker,
+    taker,
+    makerToken,
+    takerToken,
+    makerAmount,
+    takerAmount,
+    expiry,
+    chainId,
+    verifyingContract,
+    pool,
+    salt,
+    takerTokenFeeAmount,
+    feeRecipient,
+    sender,
+  }: CreateLimitOrderProps): Promise<LimitOrder> => {
+    const order = new LimitOrder({
+      makerToken,
+      takerToken,
+      makerAmount,
+      takerAmount,
+      expiry,
+      pool,
+      salt,
+      maker,
+      taker,
+      sender,
+      feeRecipient,
+      takerTokenFeeAmount,
+      chainId,
+      verifyingContract,
+    });
+
+    return order;
+  };
+
+  // Create an RFQ order type object
+  const createRfqOrderType = async ({
+    maker,
+    taker,
+    makerToken,
+    takerToken,
+    makerAmount,
+    takerAmount,
+    expiry,
+    chainId,
+    verifyingContract,
+    pool,
+    salt,
+    takerTokenFeeAmount,
+    feeRecipient,
+    sender,
+  }: CreateLimitOrderProps): Promise<RfqOrder> => {
+    const order = new RfqOrder({
+      makerToken,
+      takerToken,
+      makerAmount,
+      takerAmount,
+      expiry,
+      pool,
+      salt,
+      maker,
+      taker,
+      chainId,
+      verifyingContract,
+      txOrigin: sender || ethers.ZeroAddress,
+    });
+
+    return order;
+  };
+
+  // Sign order using ethers signer (works with all wallets)
+  const signOrder = async (order: LimitOrder | RfqOrder): Promise<Signature> => {
+    assert(signer, 'signer == undefined');
+    assert(provider, 'provider == undefined');
+
+    // Get chain ID
+    const network = await provider.getNetwork();
+    const chainId = Number(network.chainId);
+
+    // Create EIP-712 domain
+    const domain = {
+      name: 'ZeroEx',
+      version: '1.0.0',
+      chainId: chainId,
+      verifyingContract: exchangeProxyAddress,
+    };
+
+    // Prepare order data for signing
+    let types: any;
+    let value: any;
+
+    console.log({ order }, 'signOrder');
+
+    if (order instanceof LimitOrder) {
+      types = {
+        LimitOrder: [
+          { name: 'makerToken', type: 'address' },
+          { name: 'takerToken', type: 'address' },
+          { name: 'makerAmount', type: 'uint128' },
+          { name: 'takerAmount', type: 'uint128' },
+          { name: 'takerTokenFeeAmount', type: 'uint128' },
+          { name: 'maker', type: 'address' },
+          { name: 'taker', type: 'address' },
+          { name: 'sender', type: 'address' },
+          { name: 'feeRecipient', type: 'address' },
+          { name: 'pool', type: 'bytes32' },
+          { name: 'expiry', type: 'uint64' },
+          { name: 'salt', type: 'uint256' },
+        ],
+      };
+
+      value = {
+        makerToken: order.makerToken,
+        takerToken: order.takerToken,
+        makerAmount: order.makerAmount.toString(),
+        takerAmount: order.takerAmount.toString(),
+        takerTokenFeeAmount: order.takerTokenFeeAmount.toString(),
+        maker: order.maker,
+        taker: order.taker,
+        sender: order.sender,
+        feeRecipient: order.feeRecipient,
+        pool: order.pool,
+        expiry: order.expiry.toString(),
+        salt: order.salt.toString(),
+      };
+    } else {
+      types = {
+        RfqOrder: [
+          { name: 'makerToken', type: 'address' },
+          { name: 'takerToken', type: 'address' },
+          { name: 'makerAmount', type: 'uint128' },
+          { name: 'takerAmount', type: 'uint128' },
+          { name: 'maker', type: 'address' },
+          { name: 'taker', type: 'address' },
+          { name: 'txOrigin', type: 'address' },
+          { name: 'pool', type: 'bytes32' },
+          { name: 'expiry', type: 'uint64' },
+          { name: 'salt', type: 'uint256' },
+        ],
+      };
+
+      value = {
+        makerToken: order.makerToken,
+        takerToken: order.takerToken,
+        makerAmount: order.makerAmount.toString(),
+        takerAmount: order.takerAmount.toString(),
+        maker: order.maker,
+        taker: order.taker,
+        txOrigin: (order as RfqOrder).txOrigin,
+        pool: order.pool,
+        expiry: order.expiry.toString(),
+        salt: order.salt.toString(),
+      };
+    }
+
+    // Sign using EIP-712
+    const signature = await signer.signTypedData(domain, types, value);
+
+    return {
+      v: parseInt(signature.slice(-2), 16),
+      r: signature.slice(0, 66),
+      s: '0x' + signature.slice(66, 130),
+      signatureType: SignatureType.EIP712,
+    };
+  };
+
+  // Main function to create an order
+  const createOrder = async ({
+    maker,
+    taker,
+    makerToken,
+    takerToken,
+    orderType,
+    makerAssetAmount,
+    takerAssetAmount,
+    expiryUnixTimestamp,
+  }: CreateOrderProps): Promise<{
+    order: LimitOrder | RfqOrder;
+    pool: string;
+    salt: BigNumber;
+    orderSignature: Signature;
+    takerAssetAmount: bigint;
+    takerTokenFeeAmount: string;
+  }> => {
+    assert(signer, 'signer == undefined');
+    assert(provider, 'provider == undefined');
+
+    const network = await provider.getNetwork();
+    const chainId = Number(network.chainId);
+
+    const baseConfig = getBaseOrderConfig({
+      maker,
+      taker,
+      makerToken,
+      takerToken,
+      orderType,
+      makerAssetAmount,
+      takerAssetAmount,
+      expiryUnixTimestamp,
+    });
+
+    const pool = '0x0000000000000000000000000000000000000000000000000000000000000001';
+    const salt = new BigNumber(Date.now());
+
+    let order: LimitOrder | RfqOrder;
+
+    if (orderType === OrderType.LIMIT) {
+      order = await createLimitOrderType({
+        ...baseConfig,
+        chainId,
+        verifyingContract: exchangeProxyAddress,
+        pool,
+        salt,
+      });
+    } else {
+      order = await createRfqOrderType({
+        ...baseConfig,
+        chainId,
+        verifyingContract: exchangeProxyAddress,
+        pool,
+        salt,
+      });
+    }
+
+    const orderSignature = await signOrder(order);
+
+    return {
+      order,
+      pool,
+      salt,
+      orderSignature,
+      takerAssetAmount,
+      takerTokenFeeAmount: TAKER_TOKEN_FEE_AMOUNT,
+    };
+  };
+
+  // Check order status
+  const checkOrderStatus = async (order: LimitOrder | RfqOrder): Promise<bigint> => {
+    assert(provider, 'provider == undefined');
+
+    const exchangeWrappers = new Contract(
+      exchangeProxyAddress,
+      ZERO_X_NATIVE_ORDER_FEATURE_ABI,
+      provider
+    );
+
+    let status: bigint;
+
+    console.log({ order }, 'checkOrderStatus');
+
+    if (order instanceof LimitOrder) {
+      const orderParamsInBigInt: any = {
+        ...order,
+        takerAmount: BigInt(order.takerAmount.toString()),
+        makerAmount: BigInt(order.makerAmount.toString()),
+        takerTokenFeeAmount: BigInt(order.takerTokenFeeAmount.toString()),
+        salt: BigInt(order.salt.toString()),
+        expiry: BigInt(order.expiry.toString()),
+      };
+      const res = await exchangeWrappers.getLimitOrderInfo(orderParamsInBigInt);
+      status = res.status;
+    } else {
+      const res = await exchangeWrappers.getRfqOrderInfo(order);
+      status = res.status;
+    }
+
+    return status;
+  };
+
+  // Check if order is fillable
+  const checkOrderStatusOrThrow = async ({
+    order,
+  }: {
+    order: LimitOrder | RfqOrder;
+  }): Promise<bigint> => {
+    try {
+      const status = await checkOrderStatus(order);
+
+      if (status !== BigInt(OrderStatus.Fillable)) {
+        throw new Error('Order is not fillable');
+      }
+
+      return status;
+    } catch (error) {
+      console.error(error);
+      throw error;
+    }
+  };
+
+  // Get encoded transaction data for filling order
+  const fillOrderEncodedTransactionData = async ({
+    order,
+    orderSignature,
+    takerAssetAmount,
+  }: {
+    order: LimitOrder | RfqOrder;
+    orderSignature: Signature;
+    takerAssetAmount: bigint;
+  }) => {
+    assert(provider, 'provider == undefined');
+
+    let orderData: string;
+
+    console.log({ order, orderSignature, takerAssetAmount }, 'fillOrderEncodedTransactionData');
+
+    const exchangeWrappers = new Contract(
+      exchangeProxyAddress,
+      ZERO_X_NATIVE_ORDER_FEATURE_ABI,
+      signer
+    );
+
+    // Check if the order is fillable or throws an error
+    await checkOrderStatusOrThrow({ order });
+
+    if (order instanceof LimitOrder) {
+      const orderParamsInBigInt: any = {
+        ...order,
+        takerAmount: BigInt(order.takerAmount.toString()),
+        makerAmount: BigInt(order.makerAmount.toString()),
+        takerTokenFeeAmount: BigInt(order.takerTokenFeeAmount.toString()),
+        salt: BigInt(order.salt.toString()),
+        expiry: BigInt(order.expiry.toString()),
+      };
+      orderData = exchangeWrappers.interface.encodeFunctionData('fillLimitOrder', [
+        orderParamsInBigInt,
+        orderSignature,
+        BigInt(takerAssetAmount.toString()),
+      ]);
+    } else {
+      orderData = exchangeWrappers.interface.encodeFunctionData('fillRfqOrder', [
+        order,
+        orderSignature,
+        takerAssetAmount,
+      ]);
+    }
+
+    return orderData;
+  };
+
+  // Reconstruct LimitOrder from plain object
+  const reconstructLimitOrder = (orderData: any): LimitOrder => {
+    return new LimitOrder({
+      makerToken: orderData.makerToken,
+      takerToken: orderData.takerToken,
+      makerAmount: new BigNumber(orderData.makerAmount),
+      takerAmount: new BigNumber(orderData.takerAmount),
+      maker: orderData.maker,
+      taker: orderData.taker,
+      sender: orderData.sender,
+      feeRecipient: orderData.feeRecipient,
+      pool: orderData.pool,
+      expiry: new BigNumber(orderData.expiry),
+      salt: new BigNumber(orderData.salt),
+      takerTokenFeeAmount: new BigNumber(orderData.takerTokenFeeAmount || '0'),
+      chainId: orderData.chainId,
+      verifyingContract: orderData.verifyingContract,
+    });
+  };
+
+  // Fill order directly (without UserOperations)
+  const fillOrder = async ({
+    order,
+    orderSignature,
+    takerAssetAmount,
+  }: {
+    order: LimitOrder | RfqOrder | any; // Accept plain object too
+    orderSignature: Signature;
+    takerAssetAmount: bigint;
+  }) => {
+    assert(signer, 'signer == undefined');
+
+    const exchangeContract = new Contract(
+      exchangeProxyAddress,
+      ZERO_X_NATIVE_ORDER_FEATURE_ABI,
+      signer
+    );
+
+    // If order is a plain object, reconstruct it
+    let orderObj = order;
+    if (!(order instanceof LimitOrder) && !(order instanceof RfqOrder)) {
+      console.log('Reconstructing LimitOrder from plain object...');
+      orderObj = reconstructLimitOrder(order);
+    }
+
+    // Check if the order is fillable
+    await checkOrderStatusOrThrow({ order: orderObj });
+
+    let tx;
+
+    if (orderObj instanceof LimitOrder) {
+      const orderParamsInBigInt: any = {
+        ...orderObj,
+        takerAmount: BigInt(orderObj.takerAmount.toString()),
+        makerAmount: BigInt(orderObj.makerAmount.toString()),
+        takerTokenFeeAmount: BigInt(orderObj.takerTokenFeeAmount.toString()),
+        salt: BigInt(orderObj.salt.toString()),
+        expiry: BigInt(orderObj.expiry.toString()),
+      };
+
+      tx = await exchangeContract.fillLimitOrder(
+        orderParamsInBigInt,
+        orderSignature,
+        BigInt(takerAssetAmount.toString())
+      );
+    } else {
+      tx = await exchangeContract.fillRfqOrder(orderObj, orderSignature, takerAssetAmount);
+    }
+
+    const receipt = await tx.wait();
+    console.log('Fill order receipt:', receipt);
+    console.log('Order filled:', receipt.hash);
+
+    return receipt;
+  };
+
+  return {
+    // Order creation
+    createOrder,
+
+    // Token approval
+    approveToken,
+    checkAllowance,
+
+    // Order filling
+    fillOrder,
+    fillOrderEncodedTransactionData,
+    reconstructLimitOrder,
+
+    // Order status
+    checkOrderStatus,
+    checkOrderStatusOrThrow,
+  };
+}
