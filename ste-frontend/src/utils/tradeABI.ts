@@ -1,6 +1,6 @@
-// 1inch Limit Order Protocol ABI
+// 1inch Limit Order Protocol V4 ABI
 export const ONEINCH_LIMIT_ORDER_PROTOCOL_ABI = [
-  // Order structure - used for fillOrder, cancelOrder, etc.
+  // Order structure - 1inch V4 uses Address (uint256) and MakerTraits (uint256)
   {
     type: 'function',
     name: 'fillOrder',
@@ -10,18 +10,17 @@ export const ONEINCH_LIMIT_ORDER_PROTOCOL_ABI = [
         type: 'tuple',
         components: [
           { name: 'salt', type: 'uint256' },
-          { name: 'maker', type: 'uint256' },
-          { name: 'receiver', type: 'uint256' },
-          { name: 'makerAsset', type: 'uint256' },
-          { name: 'takerAsset', type: 'uint256' },
+          { name: 'maker', type: 'uint256' },          // Address type in Solidity is uint256
+          { name: 'receiver', type: 'uint256' },       // Address type in Solidity is uint256
+          { name: 'makerAsset', type: 'uint256' },     // Address type in Solidity is uint256
+          { name: 'takerAsset', type: 'uint256' },     // Address type in Solidity is uint256
           { name: 'makingAmount', type: 'uint256' },
           { name: 'takingAmount', type: 'uint256' },
-          { name: 'makerTraits', type: 'uint256' },
+          { name: 'makerTraits', type: 'uint256' },    // MakerTraits type in Solidity is uint256
         ],
       },
       { name: 'r', type: 'bytes32' },
-      { name: 's', type: 'bytes32' },
-      { name: 'vs', type: 'uint256' },
+      { name: 'vs', type: 'bytes32' },
       { name: 'amount', type: 'uint256' },
       { name: 'takerTraits', type: 'uint256' },
     ],
@@ -36,20 +35,8 @@ export const ONEINCH_LIMIT_ORDER_PROTOCOL_ABI = [
     type: 'function',
     name: 'cancelOrder',
     inputs: [
-      {
-        name: 'order',
-        type: 'tuple',
-        components: [
-          { name: 'salt', type: 'uint256' },
-          { name: 'maker', type: 'uint256' },
-          { name: 'receiver', type: 'uint256' },
-          { name: 'makerAsset', type: 'uint256' },
-          { name: 'takerAsset', type: 'uint256' },
-          { name: 'makingAmount', type: 'uint256' },
-          { name: 'takingAmount', type: 'uint256' },
-          { name: 'makerTraits', type: 'uint256' },
-        ],
-      },
+      { name: 'makerTraits', type: 'uint256' },
+      { name: 'orderHash', type: 'bytes32' },
     ],
     outputs: [
       { name: 'orderRemaining', type: 'uint256' },

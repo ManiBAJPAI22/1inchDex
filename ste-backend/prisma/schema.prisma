@@ -69,10 +69,14 @@ model Trade {
   makerOrderId    String
   takerOrderId    String
   txHash          String?
+  settlementStatus String     @default("pending") // pending, settling, settled, failed
+  settlementError  String?    // Error message if settlement fails
+  settledAt        DateTime?  @db.Timestamp(6)
   createdAt       DateTime    @default(now()) @db.Timestamp(6)
 
   @@index([pairId])
   @@index([createdAt])
+  @@index([settlementStatus])
   @@map("trades")
 }
 

@@ -6,6 +6,7 @@ import { useAccount } from 'wagmi';
 import { useEthersProvider, useEthersSigner } from '@/lib/etherAdapter';
 import { LimitOrderV4Struct, MakerTraits } from '@1inch/limit-order-sdk';
 import OneInchService from '@/services/oneinch';
+import { useMemo } from 'react';
 
 export enum OrderType {
   LIMIT = 'LIMIT',
@@ -43,8 +44,11 @@ export function useTrade() {
   const oneInchContractAddress = ConstantProvider.ONEINCH_CONTRACT_ADDRESS;
   const chainId = ConstantProvider.NETWORK_CHAIN_ID;
 
-  // Initialize 1inch service
-  const oneInchService = new OneInchService(chainId);
+  // Initialize 1inch service with explicit contract address - memoized to avoid recreating on every render
+  const oneInchService = useMemo(
+    () => new OneInchService(chainId, oneInchContractAddress),
+    [chainId, oneInchContractAddress]
+  );
 
   // Approve token spending for 1inch router
   const approveToken = async ({
@@ -209,12 +213,36 @@ export function useTrade() {
     takerAmount: bigint;
   }): Promise<any> => {
     assert(signer, 'Signer is not available. Please connect your wallet.');
+    assert(provider, 'Provider is not available');
 
-    console.log('Filling 1inch order:', {
-      order,
-      signature,
-      takerAmount: takerAmount.toString(),
+    // Normalize order to ensure addresses are in proper format
+    // Handles both old format (uint256) and new format (addresses)
+    const normalizedOrder = oneInchService.normalizeOrder(order);
+
+    console.log('🔍 DETAILED fillOrder DEBUG:');
+    console.log('Order structure (normalized):', {
+      salt: normalizedOrder.salt,
+      maker: normalizedOrder.maker,
+      receiver: normalizedOrder.receiver,
+      makerAsset: normalizedOrder.makerAsset,
+      takerAsset: normalizedOrder.takerAsset,
+      makingAmount: normalizedOrder.makingAmount,
+      takingAmount: normalizedOrder.takingAmount,
+      makerTraits: normalizedOrder.makerTraits,
     });
+    console.log('Signature components:', {
+      r: signature.r,
+      vs: signature.vs,
+      fullSignature: signature.signature,
+    });
+    console.log('Fill parameters:', {
+      takerAmount: takerAmount.toString(),
+      takerAmountBigInt: takerAmount,
+      takerTraits: 0,
+    });
+
+    const takerAddress = await signer.getAddress();
+    console.log('Taker address:', takerAddress);
 
     const limitOrderContract = new Contract(
       oneInchContractAddress,
@@ -222,22 +250,35 @@ export function useTrade() {
       signer
     );
 
+    // Get order hash for logging (using normalized order with addresses)
+    const orderHash = oneInchService.getOrderHash(normalizedOrder);
+    console.log('Order hash:', orderHash);
+
+    // Convert order to contract format (addresses as uint256)
+    const orderForContract = oneInchService.convertOrderForContract(normalizedOrder);
+    console.log('Order converted to contract format (uint256 addresses)');
+
     // TakerTraits: 0 for default behavior (no special flags)
     const takerTraits = 0;
 
-    // Call fillOrder with the compact signature format
+    console.log('📞 Calling fillOrder on contract...');
+    console.log('Contract address:', oneInchContractAddress);
+    console.log('Parameters:', [orderForContract, signature.r, signature.vs, takerAmount.toString(), takerTraits]);
+
+    // Call fillOrder with the compact signature format (r, vs)
+    // The contract will revert if there are any issues with balances/allowances
     const tx = await limitOrderContract.fillOrder(
-      order,
+      orderForContract,
       signature.r,
-      signature.s,
       signature.vs,
       takerAmount,
       takerTraits
     );
 
+    console.log('✅ Transaction sent! Waiting for confirmation...');
     const receipt = await tx.wait();
 
-    console.log('Order filled:', {
+    console.log('✅ Order filled successfully!', {
       txHash: receipt.hash,
       blockNumber: receipt.blockNumber,
     });
@@ -257,7 +298,13 @@ export function useTrade() {
       signer
     );
 
-    const tx = await limitOrderContract.cancelOrder(order);
+    // Normalize order to ensure addresses are in proper format
+    const normalizedOrder = oneInchService.normalizeOrder(order);
+
+    // Convert order to contract format (addresses as uint256)
+    const orderForContract = oneInchService.convertOrderForContract(normalizedOrder);
+
+    const tx = await limitOrderContract.cancelOrder(orderForContract);
     const receipt = await tx.wait();
 
     console.log('Order canceled:', receipt.hash);
@@ -276,12 +323,32 @@ export function useTrade() {
       throw new Error('Invalid order metadata format');
     }
 
-    const order: LimitOrderV4Struct = parsed.order;
+    // Use fullOrder for contract execution (has allowedSender, offsets, interactions)
+    // The simplified 'order' is only used for EIP-712 signing
+    let orderToUse = parsed.fullOrder;
+
+    // Fallback: If fullOrder doesn't exist, construct it from order
+    if (!orderToUse && parsed.order) {
+      console.warn('No fullOrder in metadata, constructing from order');
+      orderToUse = {
+        salt: parsed.order.salt,
+        makerAsset: parsed.order.makerAsset,
+        takerAsset: parsed.order.takerAsset,
+        maker: parsed.order.maker,
+        receiver: parsed.order.receiver || ethers.ZeroAddress,
+        allowedSender: ethers.ZeroAddress, // Anyone can fill
+        makingAmount: parsed.order.makingAmount,
+        takingAmount: parsed.order.takingAmount,
+        offsets: '0',
+        interactions: '0x',
+      };
+    }
+
     const sig = oneInchService.parseSignature(parsed.signature);
     const vs = combineVS(sig.v, sig.s);
 
     return {
-      order,
+      order: orderToUse,
       signature: {
         signature: parsed.signature,
         r: sig.r,

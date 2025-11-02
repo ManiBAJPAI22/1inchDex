@@ -2,7 +2,7 @@ import { IsString, IsNumber } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class CreateTradeDto {
-  @ApiProperty({ example: 'BTC-USDT' })
+  @ApiProperty({ example: 'MBTC-MUSDT' })
   @IsString()
   pairId: string;
 

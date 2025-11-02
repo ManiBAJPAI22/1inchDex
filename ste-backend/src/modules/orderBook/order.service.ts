@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { CreateOrderDto } from './dto/createOrder.dto';
 import { OrderBook } from 'nodejs-order-book';
 import { PrismaService } from 'src/services/prisma.service';
 import { TradesService } from '../trades/trades.service';
 import { TradingPairsService } from '../tradingPairs/trading-pairs.service';
+import { SettlementService } from '../settlement/settlement.service';
 
 @Injectable()
 export class OrderService {
@@ -12,6 +13,7 @@ export class OrderService {
     private readonly prismaService: PrismaService,
     private readonly tradesService: TradesService,
     private readonly tradingPairsService: TradingPairsService,
+    private readonly settlementService: SettlementService,
   ) {
     this.orderBookInstance = new OrderBook();
   }
@@ -37,7 +39,7 @@ export class OrderService {
   }
 
   async createOrder(createOrderDto: CreateOrderDto) {
-    const pairId = createOrderDto.pairId || 'BTC-USDT';
+    const pairId = createOrderDto.pairId || 'MBTC-MUSDT';
     const userAddress = createOrderDto.userAddress || 'unknown';
 
     console.log({ pairId, userAddress }, 'createOrder');
@@ -123,6 +125,14 @@ export class OrderService {
         0,
       );
       await this.tradingPairsService.updateVolume(pairId, volumeToAdd);
+
+      // Trigger automatic settlement for matched orders
+      console.log('🔄 Triggering automatic settlement for matched orders...');
+      this.settlementService
+        .settleMatchedOrders(matchedOrdersWithMetadata, createOrderDto.metadata)
+        .catch((error: any) => {
+          console.error('Settlement error (will retry later):', error);
+        });
     }
 
     return {
@@ -141,20 +151,23 @@ export class OrderService {
     // Record fully matched orders
     if (matchResult.done && Array.isArray(matchResult.done)) {
       for (const doneOrder of matchResult.done) {
-        const takerOrderData = await this.prismaService.orderBook.findUnique({
+        const makerOrderData = await this.prismaService.orderBook.findUnique({
           where: { orderId: doneOrder.id },
         });
 
-        if (takerOrderData) {
+        if (makerOrderData) {
+          // IMPORTANT: In trading terminology:
+          // - MAKER = the resting order already in the book (doneOrder)
+          // - TAKER = the incoming new order that matches (newOrder)
           await this.tradesService.createTrade({
             pairId,
             price: doneOrder.price,
             amount: doneOrder.size,
-            side: newOrder.side,
-            makerAddress: userAddress,
-            takerAddress: takerOrderData.userAddress,
-            makerOrderId: newOrder.orderId,
-            takerOrderId: doneOrder.id,
+            side: makerOrderData.side, // Use maker's side (the resting order)
+            makerAddress: makerOrderData.userAddress, // Maker = resting order owner
+            takerAddress: userAddress, // Taker = new order owner
+            makerOrderId: doneOrder.id, // Maker = resting order
+            takerOrderId: newOrder.orderId, // Taker = new order
           });
 
           // Update matched order status to filled
@@ -201,10 +214,14 @@ export class OrderService {
         });
 
         if (orderData) {
+          // Use database data as the source of truth, with size/price from matching engine
           matchedOrders.push({
-            ...doneOrder,
-            metadata: orderData.metadata,
+            id: orderData.orderId,
             orderId: orderData.orderId,
+            side: orderData.side, // Use side from database, not matching engine
+            price: doneOrder.price,
+            size: doneOrder.size,
+            metadata: orderData.metadata,
           });
         }
       }
@@ -219,6 +236,7 @@ export class OrderService {
       if (orderData) {
         matchResult.partial.metadata = orderData.metadata;
         matchResult.partial.orderId = orderData.orderId;
+        matchResult.partial.side = orderData.side; // Add side from database
       }
     }
 

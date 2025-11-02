@@ -1,34 +1,34 @@
-// Mock Tokens (from frontend mockData.ts)
+// Mock Tokens (Deployed on Monad Testnet)
 export const mockTokens = {
-  BTC: {
-    symbol: 'BTC',
-    name: 'Bitcoin',
-    address: '0x687b4100Aa3790154fCE2532364f373368a0D1CE',
-    decimals: 8,
-  },
-  ETH: {
-    symbol: 'ETH',
-    name: 'Ethereum',
-    address: '0x779F0BBff7823d74018B0C4DC8D3c3A681b3a265',
+  MBTC: {
+    symbol: 'MBTC',
+    name: 'Mock Bitcoin',
+    address: '0xbFf4bfF3ef603ef102c1db5634353691EBe5948E',
     decimals: 18,
   },
-  USDT: {
-    symbol: 'USDT',
-    name: 'Tether',
-    address: '0xc812C10b26ccf7D1942F0C2310b02D08A465cfF8',
+  MUSDT: {
+    symbol: 'MUSDT',
+    name: 'Mock USDT',
+    address: '0x3CDF19aD4e2656269aAE1b8AC8E932D66cDd0443',
+    decimals: 6,
+  },
+  MUSDC: {
+    symbol: 'MUSDC',
+    name: 'Mock USDC',
+    address: '0x9f19b6B8cB0378592C6173F9FC794401274DBb6a',
     decimals: 6,
   },
 };
 
 export const mockTradingPairs = [
   {
-    pairId: 'BTC-USDT',
-    baseToken: 'BTC',
-    quoteToken: 'USDT',
-    baseTokenAddress: mockTokens.BTC.address,
-    quoteTokenAddress: mockTokens.USDT.address,
-    baseDecimals: mockTokens.BTC.decimals,
-    quoteDecimals: mockTokens.USDT.decimals,
+    pairId: 'MBTC-MUSDT',
+    baseToken: 'MBTC',
+    quoteToken: 'MUSDT',
+    baseTokenAddress: mockTokens.MBTC.address,
+    quoteTokenAddress: mockTokens.MUSDT.address,
+    baseDecimals: mockTokens.MBTC.decimals,
+    quoteDecimals: mockTokens.MUSDT.decimals,
     lastPrice: 43250.5,
     priceChange24h: 2.45,
     volume24h: 622600,
@@ -36,17 +36,17 @@ export const mockTradingPairs = [
     low24h: 42100.0,
   },
   {
-    pairId: 'ETH-USDT',
-    baseToken: 'ETH',
-    quoteToken: 'USDT',
-    baseTokenAddress: mockTokens.ETH.address,
-    quoteTokenAddress: mockTokens.USDT.address,
-    baseDecimals: mockTokens.ETH.decimals,
-    quoteDecimals: mockTokens.USDT.decimals,
-    lastPrice: 2650.75,
-    priceChange24h: -1.23,
-    volume24h: 345200,
-    high24h: 2750.0,
-    low24h: 2600.0,
+    pairId: 'MUSDC-MUSDT',
+    baseToken: 'MUSDC',
+    quoteToken: 'MUSDT',
+    baseTokenAddress: mockTokens.MUSDC.address,
+    quoteTokenAddress: mockTokens.MUSDT.address,
+    baseDecimals: mockTokens.MUSDC.decimals,
+    quoteDecimals: mockTokens.MUSDT.decimals,
+    lastPrice: 1.0,
+    priceChange24h: 0.05,
+    volume24h: 245000,
+    high24h: 1.01,
+    low24h: 0.99,
   },
 ];

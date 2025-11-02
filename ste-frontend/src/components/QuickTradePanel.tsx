@@ -96,14 +96,7 @@ export function QuickTradePanel() {
       const makerTokenDecimals = side === 'sell' ? baseTokenDecimals : quoteTokenDecimals;
       const takerTokenDecimals = side === 'sell' ? quoteTokenDecimals : baseTokenDecimals;
 
-      // Step 1: Check and approve token if needed (1inch contract)
-      console.log('Checking token allowance for 1inch...');
-      const currentAllowance = await checkAllowance({
-        tokenAddress: makerToken,
-        owner: address,
-        spender: ConstantProvider.ONEINCH_CONTRACT_ADDRESS,
-      });
-
+      // Step 1: Calculate order amounts
       let takerAmount = 0;
       let makerAmount = 0;
 
@@ -117,23 +110,88 @@ export function QuickTradePanel() {
         takerAmount = Number(amount); // BTC you're buying
       }
 
-      const allowanceFormatted = ethers.formatUnits(
-        currentAllowance.toString(),
-        makerTokenDecimals
-      );
+      // Convert to BigInt for accurate comparison
+      const makerAmountBigInt = ethers.parseUnits(makerAmount.toString(), makerTokenDecimals);
+      const takerAmountBigInt = ethers.parseUnits(takerAmount.toString(), takerTokenDecimals);
 
-      if (Number(allowanceFormatted) < makerAmount) {
-        toast.loading('Approving token for 1inch...', { id: loadingToast });
+      // Step 2: Check and approve BOTH tokens (for atomic settlement)
+      // Both base and quote tokens need approval for the 1inch contract to execute trades
+      console.log('Checking token allowances for 1inch...');
+      toast.loading('Checking token approvals...', { id: loadingToast });
+
+      // Check and approve BASE token
+      console.log(`Checking ${selectedPair.baseToken.symbol} allowance...`, {
+        tokenAddress: baseTokenAddress,
+        amount: side === 'sell' ? makerAmount : takerAmount,
+      });
+
+      const baseAllowance = await checkAllowance({
+        tokenAddress: baseTokenAddress,
+        owner: address,
+        spender: ConstantProvider.ONEINCH_CONTRACT_ADDRESS,
+      });
+
+      const requiredBaseAmount = side === 'sell' ? makerAmountBigInt : takerAmountBigInt;
+      console.log(`${selectedPair.baseToken.symbol} allowance:`, {
+        allowance: baseAllowance.toString(),
+        allowanceFormatted: ethers.formatUnits(baseAllowance, baseTokenDecimals),
+        requiredAmount: side === 'sell' ? makerAmount : takerAmount,
+        needsApproval: baseAllowance < requiredBaseAmount,
+      });
+
+      if (baseAllowance < requiredBaseAmount) {
+        console.log(`⚠️ Insufficient ${selectedPair.baseToken.symbol} allowance - requesting approval...`);
+        toast.loading(`Approving ${selectedPair.baseToken.symbol} for 1inch...`, { id: loadingToast });
+
         await approveToken({
-          tokenAddress: makerToken,
+          tokenAddress: baseTokenAddress,
           spender: ConstantProvider.ONEINCH_CONTRACT_ADDRESS,
         });
-        toast.success('Token approved for 1inch!', { id: loadingToast });
+
+        toast.success(`${selectedPair.baseToken.symbol} approved for 1inch!`, { id: loadingToast });
+        console.log(`✅ ${selectedPair.baseToken.symbol} approval confirmed`);
       } else {
-        console.log('Token already approved for 1inch');
+        console.log(`✅ ${selectedPair.baseToken.symbol} already approved for 1inch`);
       }
 
-      // Step 2: Create and sign 1inch limit order
+      // Check and approve QUOTE token
+      console.log(`Checking ${selectedPair.quoteToken.symbol} allowance...`, {
+        tokenAddress: quoteTokenAddress,
+        amount: side === 'buy' ? makerAmount : takerAmount,
+      });
+
+      const quoteAllowance = await checkAllowance({
+        tokenAddress: quoteTokenAddress,
+        owner: address,
+        spender: ConstantProvider.ONEINCH_CONTRACT_ADDRESS,
+      });
+
+      const requiredQuoteAmount = side === 'buy' ? makerAmountBigInt : takerAmountBigInt;
+      console.log(`${selectedPair.quoteToken.symbol} allowance:`, {
+        allowance: quoteAllowance.toString(),
+        allowanceFormatted: ethers.formatUnits(quoteAllowance, quoteTokenDecimals),
+        requiredAmount: side === 'buy' ? makerAmount : takerAmount,
+        needsApproval: quoteAllowance < requiredQuoteAmount,
+      });
+
+      if (quoteAllowance < requiredQuoteAmount) {
+        console.log(`⚠️ Insufficient ${selectedPair.quoteToken.symbol} allowance - requesting approval...`);
+        toast.loading(`Approving ${selectedPair.quoteToken.symbol} for 1inch...`, { id: loadingToast });
+
+        await approveToken({
+          tokenAddress: quoteTokenAddress,
+          spender: ConstantProvider.ONEINCH_CONTRACT_ADDRESS,
+        });
+
+        toast.success(`${selectedPair.quoteToken.symbol} approved for 1inch!`, { id: loadingToast });
+        console.log(`✅ ${selectedPair.quoteToken.symbol} approval confirmed`);
+      } else {
+        console.log(`✅ ${selectedPair.quoteToken.symbol} already approved for 1inch`);
+      }
+
+      console.log('✅ All token approvals confirmed');
+
+      // Step 3: Create and sign 1inch limit order
       console.log('Creating 1inch limit order...');
       toast.loading('Creating and signing 1inch order...', { id: loadingToast });
       const { order, signature, orderHash } = await createOrder({
@@ -148,7 +206,7 @@ export function QuickTradePanel() {
 
       console.log('1inch order created and signed:', { order, orderHash });
 
-      // Step 3: Submit 1inch order to backend
+      // Step 4: Submit 1inch order to backend
       const data: CreateOrderI = {
         orderId: orderHash, // Use 1inch order hash as orderId
         size: side === 'sell' ? Number(makerAmount) : Number(takerAmount),
@@ -179,69 +237,146 @@ export function QuickTradePanel() {
       if (matchResult.matchedOrders && matchResult.matchedOrders.length > 0) {
         console.log('Orders matched! Executing trades on-chain...');
 
-        for (const matchedOrder of matchResult.matchedOrders) {
+        for (let i = 0; i < matchResult.matchedOrders.length; i++) {
+          const matchedOrder = matchResult.matchedOrders[i];
+
+          // Add delay between processing multiple orders to avoid RPC rate limits
+          if (i > 0) {
+            console.log('Waiting 2 seconds to avoid RPC rate limit...');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+
           try {
-            console.log('Executing matched 1inch order:', matchedOrder);
+            console.log('═══════════════════════════════════════════════════════');
+            console.log(`Processing matched order ${i + 1}/${matchResult.matchedOrders.length}`);
+            console.log('Matched order details:', matchedOrder);
 
             // Reconstruct the 1inch order from metadata
             const { order: reconstructedOrder, signature: orderSignature } = reconstructOrder(
               matchedOrder.metadata
             );
 
-            console.log('Reconstructed 1inch order:', { reconstructedOrder, orderSignature });
+            console.log('Reconstructed order:', reconstructedOrder);
+            console.log('Order maker (uint256):', reconstructedOrder.maker);
+            console.log('Current user:', address);
 
-            // Determine if we're the maker or taker
-            const isMaker = matchedOrder.side === side;
+            // CRITICAL: Determine if we're the maker by comparing addresses
+            // We should only fill orders where WE ARE THE TAKER (not the maker)
+            // Note: maker is stored as uint256 in the new 1inch V4 format, so we need to convert it
+            const orderMaker = ethers.getAddress('0x' + BigInt(reconstructedOrder.maker).toString(16).padStart(40, '0')).toLowerCase();
+            const currentUser = address.toLowerCase();
+            const isCurrentUserMaker = orderMaker === currentUser;
 
-            if (!isMaker || matchResult.partial) {
-              // We're the taker - we need to fill the matched order on-chain
-              console.log('Filling matched 1inch order as taker...');
+            console.log('Role check:', {
+              orderMaker,
+              currentUser,
+              isCurrentUserMaker,
+              shouldFillOrder: !isCurrentUserMaker,
+            });
 
-              // Calculate fill amount - the taker amount to take
-              const fillAmount = ethers.parseUnits(
-                matchedOrder.size.toString(),
-                side === 'buy' ? baseTokenDecimals : quoteTokenDecimals
-              );
-
-              console.log('Executing fillOrder transaction on 1inch...');
-
-              const receipt = await fillOrder({
-                order: reconstructedOrder,
-                signature: orderSignature,
-                takerAmount: fillAmount,
-              });
-
-              console.log('1inch fillOrder receipt:', receipt);
-
-              // Capture transaction hash
-              const txHash = receipt?.hash || receipt?.transactionHash;
-              if (txHash) {
-                transactionHashes.push(txHash);
-                console.log('Transaction hash captured:', txHash);
-              }
-
+            if (isCurrentUserMaker) {
+              // We are the MAKER of this order
+              // Skip - the counterparty (taker) will fill this order
+              console.log('⏭️  SKIPPING: We are the maker of this order. Counterparty will fill it.');
+              console.log('═══════════════════════════════════════════════════════\n');
               executedTrades++;
-            } else {
-              // We're the maker - our order was matched by a taker
-              // The taker will execute the fillOrder transaction
-              executedTrades++;
+              continue;
             }
-          } catch (execError) {
-            console.error('Error executing matched 1inch order:', execError);
+
+            // We are the TAKER - we need to fill this order
+            console.log('✅ FILLING: We are the taker. Filling counterparty\'s order...');
+
+            // Verify we're not trying to fill our own order (double check)
+            if (orderMaker === currentUser) {
+              console.error('❌ ERROR: Attempting to fill own order! Skipping.');
+              console.log('═══════════════════════════════════════════════════════\n');
+              failedTrades++;
+              continue;
+            }
+
+            // Calculate fill amount - the takerAmount for 1inch fillOrder
+            // This must be in the maker's takerAsset (what maker wants to receive)
+            let fillAmount;
+            let fillDecimals;
+            let fillTokenSymbol;
+
+            if (matchedOrder.side === 'sell') {
+              // Maker is selling base for quote
+              // takerAsset = quote token, so amount = size * price (in quote)
+              const quoteAmount = matchedOrder.size * matchedOrder.price;
+              fillAmount = ethers.parseUnits(quoteAmount.toString(), quoteTokenDecimals);
+              fillDecimals = quoteTokenDecimals;
+              fillTokenSymbol = selectedPair.quoteToken.symbol;
+              console.log(`📊 Maker selling ${matchedOrder.size} ${selectedPair.baseToken.symbol} for ${quoteAmount} ${fillTokenSymbol}`);
+              console.log(`   We (taker) will provide: ${quoteAmount} ${fillTokenSymbol} (${fillAmount.toString()} wei)`);
+            } else {
+              // Maker is buying base with quote
+              // takerAsset = base token, so amount = size (in base)
+              fillAmount = ethers.parseUnits(matchedOrder.size.toString(), baseTokenDecimals);
+              fillDecimals = baseTokenDecimals;
+              fillTokenSymbol = selectedPair.baseToken.symbol;
+              console.log(`📊 Maker buying ${matchedOrder.size} ${selectedPair.baseToken.symbol} with ${matchedOrder.size * matchedOrder.price} ${selectedPair.quoteToken.symbol}`);
+              console.log(`   We (taker) will provide: ${matchedOrder.size} ${fillTokenSymbol} (${fillAmount.toString()} wei)`);
+            }
+
+            console.log('\n📞 Calling fillOrder on 1inch contract...');
+            console.log('   Contract:', reconstructedOrder.makerAsset, '→', reconstructedOrder.takerAsset);
+            console.log('   Fill amount:', fillAmount.toString(), fillTokenSymbol);
+
+            const receipt = await fillOrder({
+              order: reconstructedOrder,
+              signature: orderSignature,
+              takerAmount: fillAmount,
+            });
+
+            console.log('✅ fillOrder SUCCESS!');
+            console.log('   Transaction receipt:', receipt);
+
+            // Capture transaction hash
+            const txHash = receipt?.hash || receipt?.transactionHash;
+            if (txHash) {
+              transactionHashes.push(txHash);
+              console.log('   Transaction hash:', txHash);
+            }
+
+            console.log('═══════════════════════════════════════════════════════\n');
+            executedTrades++;
+          } catch (execError: any) {
+            console.error('═══════════════════════════════════════════════════════');
+            console.error('❌ ERROR executing matched 1inch order');
+            console.error('Error message:', execError?.message);
+            console.error('Error code:', execError?.code);
+            console.error('Error reason:', execError?.reason);
+            if (execError?.data) {
+              console.error('Error data:', execError.data);
+            }
+            console.error('Full error:', execError);
+            console.error('═══════════════════════════════════════════════════════\n');
             failedTrades++;
           }
         }
 
+        console.log('\n🏁 Order execution complete!');
+        console.log(`   Total matched orders: ${matchResult.matchedOrders.length}`);
+        console.log(`   Successfully executed: ${executedTrades}`);
+        console.log(`   Failed: ${failedTrades}`);
+        console.log(`   Transaction hashes: ${transactionHashes.length}`);
+
         if (executedTrades > 0) {
+          // Determine the appropriate message based on whether we filled any orders
+          const wasTaker = transactionHashes.length > 0;
+          const roleMessage = wasTaker
+            ? 'You filled your counterparty\'s order(s)'
+            : 'Your order was filled by your counterparty';
+
           toast.success(
-            `${side.toUpperCase()} order matched! ${executedTrades} trade(s) executed${failedTrades > 0 ? `, ${failedTrades} failed` : ''}`,
+            `${side.toUpperCase()} order matched! ${roleMessage}. ${executedTrades} trade(s) completed${failedTrades > 0 ? `, ${failedTrades} failed` : ''}`,
             { id: loadingToast, duration: 6000 }
           );
 
-          // Only show modal if there are transaction hashes (i.e., we were the taker)
-          if (transactionHashes.length > 0) {
-            console.log('Final transaction hashes:', transactionHashes);
-            console.log('Transaction hashes length:', transactionHashes.length);
+          // Show transaction modal if we were the taker (we have transaction hashes)
+          if (wasTaker) {
+            console.log('📋 Showing transaction modal with', transactionHashes.length, 'transaction(s)');
 
             setTransactionData({
               executedTrades,
@@ -250,7 +385,7 @@ export function QuickTradePanel() {
             });
             setShowTransactionModal(true);
           } else {
-            console.log('No transaction hashes - we were the maker, not the taker');
+            console.log('ℹ️  Not showing transaction modal - we were the maker, counterparty executed the fill');
           }
         }
       }
