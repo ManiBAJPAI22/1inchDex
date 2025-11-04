@@ -98,6 +98,7 @@ export class OrderService {
     await this.prismaService.orderBookAudit.upsert({
       where: { id: 1 },
       create: {
+        id: 1, // Explicitly set id to 1 when creating
         journal: journal,
         snapshot: snapshot as any,
       },

@@ -1,4 +1,4 @@
-import { LimitOrderV4Struct } from '@1inch/limit-order-sdk';
+import { LimitOrderV4Struct, MakerTraits } from '@1inch/limit-order-sdk';
 import { ethers } from 'ethers';
 import ConstantProvider from '@/utils/constantProvider';
 
@@ -48,23 +48,41 @@ export class OneInchService {
       takerAmount,
       maker,
       receiver = '0x0000000000000000000000000000000000000000', // address(0) means maker
-      allowedSender = '0x0000000000000000000000000000000000000000', // address(0) means anyone
       expiry = Math.floor(Date.now() / 1000) + 86400, // Default 24 hours
       nonce,
     } = params;
+
+    // Generate a random salt if not provided
+    const salt = nonce || this.generateSalt();
+
+    // Build makerTraits using 1inch SDK
+    // This properly encodes expiration, nonce, and other order flags
+    const UINT_40_MAX = (1n << 40n) - 1n;
+    const orderNonce = BigInt(salt) % UINT_40_MAX; // Ensure nonce fits in uint40
+
+    const makerTraits = MakerTraits.default()
+      .withExpiration(BigInt(expiry))
+      .withNonce(orderNonce)
+      .asBigInt();
+
+    console.log('📦 MakerTraits encoded:', {
+      expiry,
+      nonce: orderNonce.toString(),
+      makerTraits: makerTraits.toString(),
+    });
 
     // Create the 1inch V4 order structure
     // For EIP-712 signing, we keep addresses as address type (not uint256)
     // For contract calls, we'll convert to uint256 separately
     const order = {
-      salt: nonce || this.generateSalt(),
+      salt: salt,
       maker: maker,          // Keep as address for signing
       receiver: receiver,    // Keep as address for signing
       makerAsset: makerAsset, // Keep as address for signing
       takerAsset: takerAsset, // Keep as address for signing
       makingAmount: makerAmount,
       takingAmount: takerAmount,
-      makerTraits: '0',
+      makerTraits: makerTraits.toString(),
     };
 
     return order;
